@@ -2,7 +2,7 @@
 Official PyTorch implementation of relative pose regrssion with a single image
 Our method is illustarted below:
 
-![method](.imgs/approach.jpg)
+![method](imgs/approach.png)
 
 ### Pre-training absolute pose regressors and NERF models 
 We implement our approach with [MS-Transformer](https://github.com/yolish/multi-scene-pose-transformer) as our pre-trained APR and [nerf-mm](https://github.com/ActiveVisionLab/nerfmm) as our pre-trained NERF model (which can be trained without extrnsitics and intrinsics)
