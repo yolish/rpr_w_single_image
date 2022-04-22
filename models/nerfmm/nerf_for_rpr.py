@@ -39,7 +39,7 @@ def run_nerf(nerf_model, focal_net, p, h, w, device, args, near=0.0, far=1.0):
     c2w = np.zeros((4, 4)).astype(np.float)
     q = p[3:]
     c2w[:3, :3] = t3d.quaternions.quat2mat(q/np.linalg.norm(q))
-    c2w[3, :3] = p[:3]
+    c2w[:3, 3] = p[:3]
     c2w[3,3] = 1
     c2w = torch.Tensor(c2w).to(device)
 
@@ -48,5 +48,12 @@ def run_nerf(nerf_model, focal_net, p, h, w, device, args, near=0.0, far=1.0):
                                        nerf_model, False, 0.0, args, rgb_act_fn=torch.sigmoid)
     rgb = render_result['rgb'] # (h, w, 3)
     depth = render_result['depth_map'] # (h, W)
+
+    '''
+    img = (rgb.cpu().numpy() * 255).astype(np.uint8)
+    import imageio
+    imageio.imwrite('tmp.png', img)
+    '''
+
     return rgb, depth
 
