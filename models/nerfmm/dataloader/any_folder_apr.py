@@ -1,4 +1,5 @@
 # Code copied with small modifications from: https://github.com/ActiveVisionLab/nerfmm
+# Main modfiations: allow loading poses and reading image names from a file
 import os
 
 import torch
@@ -7,6 +8,8 @@ from tqdm import tqdm
 import imageio
 import pandas as pd
 import torch.nn.functional as F
+import transforms3d as t3d
+
 
 def resize_imgs(imgs, new_h, new_w):
     """
@@ -22,20 +25,39 @@ def resize_imgs(imgs, new_h, new_w):
     return imgs  # (N, new_H, new_W, 3) torch.float32 RGB
 
 
-def load_imgs(data_dir, img_names_file, num_img_to_load, start, end, skip, load_sorted, load_img):
+def load_imgs(data_dir, img_names_file, num_img_to_load, start, end, skip, load_sorted, load_img, load_poses):
     # read file
     df = pd.read_csv(img_names_file)
     img_names = [os.path.join(data_dir, path) for path in df['img_path'].values]
     scene = df['scene'].values[0]
 
-    # down sample frames in temporal domain
-    if end == -1:
-        img_names = img_names[start::skip]
+    poses = None
+    if load_poses:
+        n = df.shape[0]
+        vec_poses = np.zeros((n, 7))
+        vec_poses[:, 0] = df['t1'].values
+        vec_poses[:, 1] = df['t2'].values
+        vec_poses[:, 2] = df['t3'].values
+        vec_poses[:, 3] = df['q1'].values
+        vec_poses[:, 4] = df['q2'].values
+        vec_poses[:, 5] = df['q3'].values
+        vec_poses[:, 6] = df['q4'].values
+        poses = np.zeros((n,4,4)).astype(np.float)
+        # convert to matrix form
+        for i in range(n):
+            q = vec_poses[i, 3:]
+            poses[i, :3, :3] = t3d.quaternions.quat2mat(q / np.linalg.norm(q))
+            poses[i, :3, 3] = vec_poses[i, :3]
+            poses[i, 3, 3] = 1
     else:
-        img_names = img_names[start:end:skip]
+        # down sample frames in temporal domain
+        if end == -1:
+            img_names = img_names[start::skip]
+        else:
+            img_names = img_names[start:end:skip]
 
-    if not load_sorted:
-        np.random.shuffle(img_names)
+        if not load_sorted:
+            np.random.shuffle(img_names)
 
     # load images after down sampled
     if num_img_to_load > len(img_names):
@@ -68,7 +90,8 @@ def load_imgs(data_dir, img_names_file, num_img_to_load, start, end, skip, load_
         'N_imgs': N_imgs,
         'H': H,
         'W': W,
-        'scene': scene
+        'scene': scene,
+        'poses': poses
     }
 
     return results
@@ -84,7 +107,7 @@ class DataLoaderAnyFolder:
         self.W              scalar
         self.N_imgs         scalar
     """
-    def __init__(self, base_dir, img_names_file, res_ratio, num_img_to_load, start, end, skip, load_sorted, load_img=True):
+    def __init__(self, base_dir, img_names_file, res_ratio, num_img_to_load, start, end, skip, load_sorted, load_img=True, load_poses=False):
         """
         :param base_dir:
         :param res_ratio:       int [1, 2, 4] etc to resize images to a lower resolution.
@@ -101,16 +124,18 @@ class DataLoaderAnyFolder:
         self.skip = skip
         self.load_sorted = load_sorted
         self.load_img = load_img
+        self.load_poses = load_poses
 
 
         image_data = load_imgs(base_dir, img_names_file, self.num_img_to_load, self.start, self.end, self.skip,
-                                self.load_sorted, self.load_img)
+                                self.load_sorted, self.load_img, self.load_poses)
         self.imgs = image_data['imgs']  # (N, H, W, 3) torch.float32
         self.img_names = image_data['img_names']  # (N, )
         self.N_imgs = image_data['N_imgs']
         self.ori_H = image_data['H']
         self.ori_W = image_data['W']
         self.scene = image_data['scene']
+        self.poses = image_data['poses']
 
         # always use ndc
         self.near = 0.0
