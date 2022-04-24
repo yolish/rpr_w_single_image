@@ -101,8 +101,64 @@ def qinv(q):
     q_inv = torch.cat((q[:, :1], -q[:, 1:]), dim=1)
     return q_inv
 
+class RelativePoseRegressor(PoseNet):
 
-class RelativePoseRegressor(nn.Module):
+    def __init__(self, config, backbone_path):
+        """
+        Constructor
+        :param backbone_path: backbone path to a resnet backbone
+        """
+        super(RelativePoseRegressor, self).__init__(config, backbone_path)
+
+        # Regressor layers
+        self.x_latent_fc = nn.Linear(self.backbone_dim*2, self.latent_dim)
+        self.q_latent_fc = nn.Linear(self.backbone_dim*2, self.latent_dim)
+        self.x_reg = nn.Linear(self.latent_dim, 3)
+        self.q_reg = nn.Linear( self.latent_dim, 4)
+
+        self.dropout = nn.Dropout(p=0.1)
+        self.avg_pooling_2d = nn.AdaptiveAvgPool2d(1)
+
+        # Initialize FC layers
+        for m in list(self.modules()):
+            if isinstance(m, nn.Linear):
+                torch.nn.init.kaiming_normal_(m.weight)
+
+    def forward_body(self, query, ref):
+
+        if self.backbone_type == "efficientnet":
+            query_vec = self.backbone.extract_features(query)
+            ref_vec = self.backbone.extract_features(ref)
+
+        else:
+            query_vec = self.backbone(query)
+            ref_vec = self.backbone(ref)
+
+        query_vec = self.avg_pooling_2d(query_vec)
+        query_vec = query_vec.flatten(start_dim=1)
+        ref_vec = self.avg_pooling_2d(ref_vec)
+        ref_vec = ref_vec.flatten(start_dim=1)
+
+        latent = torch.cat((query_vec, ref_vec), dim=1)
+
+        latent_q = F.relu(self.x_latent_fc(latent))
+        latent_x = F.relu(self.q_latent_fc(latent))
+        return latent_x, latent_q
+
+    def forward_heads(self, latent_x, latent_q):
+        rel_x = self.x_reg(self.dropout(latent_x))
+        rel_q = self.q_reg(self.dropout(latent_q))
+        return rel_x, rel_q
+
+    def forward(self, query, ref, ref_pose):
+        latent_x, latent_q = self.forward_body(query, ref)
+        rel_x, rel_q = self.forward_heads(latent_x, latent_q)
+        x = ref_pose[:, :3] + rel_x
+        q = qmult(rel_q, qinv(ref_pose[:, 3:]))
+        return {"pose": torch.cat((x,q), dim=1)}
+
+
+class RelativePoseRegressorLatent(nn.Module):
     """
     A class to represent a classic pose regressor (PoseNet) with an efficient-net backbone
     PoseNet: A Convolutional Network for Real-Time 6-DOF Camera Relocalization,
@@ -111,9 +167,8 @@ class RelativePoseRegressor(nn.Module):
     def __init__(self, config):
         """
         Constructor
-        :param backbone_path: backbone path to a resnet backbone
         """
-        super(RelativePoseRegressor, self).__init__()
+        super(RelativePoseRegressorLatent, self).__init__()
         self.latent_dim = config.get("hidden_dim")
         self.conv1 = Conv2d(4, 16, kernel_size=3)
         self.conv2 = Conv2d(16, 64, kernel_size=3)
