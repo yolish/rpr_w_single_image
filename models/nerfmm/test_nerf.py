@@ -66,6 +66,7 @@ def parse_args():
     parser.add_argument('--N_circle_traj', type=int, default=2)
 
     parser.add_argument('--ckpt_dir', type=str, default='')
+    parser.add_argument('--test_on_train', default=False, action='store_true', help="eval reconstruction on train images")
     return parser.parse_args()
 
 
@@ -137,7 +138,8 @@ def main(args):
                                       end=args.train_end,
                                       skip=args.train_skip,
                                       load_sorted=args.train_load_sorted,
-                                      load_img=False)
+                                      load_img=False,
+                                      load_poses=True)
 
     print('H: {0:4d}, W: {1:4d}.'.format(scene_train.H, scene_train.W))
     print('near: {0:.1f}, far: {1:.1f}.'.format(scene_train.near, scene_train.far))
@@ -173,16 +175,19 @@ def main(args):
     learned_poses = torch.stack([pose_param_net(i) for i in range(scene_train.N_imgs)])
 
     '''Generate camera traj'''
-    # This spiral camera traj code is modified from https://github.com/kwea123/nerf_pl.
-    # hardcoded, this is numerically close to the formula given in the original repo. Mathematically if near=1
-    # and far=infinity, then this number will converge to 4. Borrowed from https://github.com/kwea123/nerf_pl
-    N_novel_imgs = args.N_img_per_circle * args.N_circle_traj
-    focus_depth = 3.5
-    radii = np.percentile(np.abs(learned_poses.cpu().numpy()[:, :3, 3]), args.spiral_mag_percent, axis=0)  # (3,)
-    radii *= np.array(args.spiral_axis_scale)
-    c2ws = create_spiral_poses(radii, focus_depth, n_circle=args.N_circle_traj, n_poses=N_novel_imgs)
-    c2ws = torch.from_numpy(c2ws).float()  # (N, 3, 4)
-    c2ws = convert3x4_4x4(c2ws)  # (N, 4, 4)
+    if args.test_on_train:
+        c2ws = learned_poses
+    else:
+        # This spiral camera traj code is modified from https://github.com/kwea123/nerf_pl.
+        # hardcoded, this is numerically close to the formula given in the original repo. Mathematically if near=1
+        # and far=infinity, then this number will converge to 4. Borrowed from https://github.com/kwea123/nerf_pl
+        N_novel_imgs = args.N_img_per_circle * args.N_circle_traj
+        focus_depth = 3.5
+        radii = np.percentile(np.abs(learned_poses.cpu().numpy()[:, :3, 3]), args.spiral_mag_percent, axis=0)  # (3,)
+        radii *= np.array(args.spiral_axis_scale)
+        c2ws = create_spiral_poses(radii, focus_depth, n_circle=args.N_circle_traj, n_poses=N_novel_imgs)
+        c2ws = torch.from_numpy(c2ws).float()  # (N, 3, 4)
+        c2ws = convert3x4_4x4(c2ws)  # (N, 4, 4)
 
     '''Render'''
     fxfy = focal_net(0)
