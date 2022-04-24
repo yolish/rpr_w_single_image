@@ -6,7 +6,7 @@
 		"device_id": "cuda:0"
 	},
 	"ems-transposenet": {
-		"batch_size": 2,
+		"batch_size": 8,
 		"equalize_scenes": true,
 		"num_scenes": 4,
 		"learnable": true,
@@ -37,7 +37,14 @@
 			"transformer_t"
 		],
 		"no_augment": true,
-		"pose_sample_radius": 5
+		"pose_sample_radius": 5,
+		"h": 1920,
+		"w": 1080,
+		"s": 30,
+		"scenes":
+		{
+			"ShopFacade": 231
+		}
 	}
 
 }
