@@ -14,27 +14,27 @@ from models.pose_regressors import get_model
 from os.path import join
 from models.nerfmm.utils.training_utils import load_ckpt_to_net
 from models.nerfmm.models.nerf_models import OfficialNerf
+from models.nerfmm.models.poses import LearnPose
 from models.nerfmm.models.intrinsics import LearnFocal
 from models.nerfmm.nerf_for_rpr import run_nerf, get_nerf_args
-from models.rpr.RelativePoseRegressor import RelativePoseRegressor
+from models.rpr.RelativePoseRegressor import RelativePoseRegressor, RelativePoseRegressorLatent
+from torchvision.transforms import Normalize
 import os
 
 
-def get_closest_pose(query_poses, db_poses, sample_radius=0):
-    query_poses = query_poses.cpu().numpy()
-    ref_poses = np.zeros((query_poses.shape[0], 7))
-    for i, p in enumerate(query_poses):
-        dist_x = np.linalg.norm(p[:3] - db_poses[:, :3], axis=1)
-        dist_x = dist_x / np.max(dist_x)
-        dist_q = np.linalg.norm(p[3:] - db_poses[:, 3:], axis=1)
-        dist_q = dist_q / np.max(dist_q)
-        if sample_radius == 0: # take closest pose (test mode)
-            ref_poses[i, :] = db_poses[np.argmin(dist_x + dist_q)]
-        else: # sample within a radius from second place to radius + 1 (training mode)
-            sorted = np.argsort(dist_x + dist_q)
-            np.random.randint(1, sample_radius+1)
-            ref_poses[i, :] = db_poses[sorted[np.random.randint(1, sample_radius+1)]]
-    return ref_poses
+def get_closest_pose_index(p, db_poses, sample_radius=0):
+    p = p.cpu().numpy()
+    dist_x = np.linalg.norm(p[:3] - db_poses[:, :3], axis=1)
+    dist_x = dist_x / np.max(dist_x)
+    dist_q = np.linalg.norm(p[3:] - db_poses[:, 3:], axis=1)
+    dist_q = dist_q / np.max(dist_q)
+    if sample_radius == 0: # take closest pose (test mode)
+        closest_index = np.argmin(dist_x + dist_q)
+    else: # sample within a radius from second place to radius + 1 (training mode)
+        sorted = np.argsort(dist_x + dist_q)
+        closest_index = sorted[np.random.randint(1, sample_radius+1)]
+    return closest_index
+
 
 
 if __name__ == "__main__":
@@ -49,6 +49,7 @@ if __name__ == "__main__":
     arg_parser.add_argument("dataset_path", help="path to the physical location of the dataset")
     arg_parser.add_argument("labels_file", help="path to a file mapping images to their poses")
     arg_parser.add_argument("config_file", help="path to configuration file")
+    arg_parser.add_argument("--rpr_backbone_path", help="path to a pretrained rpr backbone path in case using apr only for pose guess")
     arg_parser.add_argument("--rpr_checkpoint_path", help="path to a trained pose encoder")
     arg_parser.add_argument("--ref_poses_file", help="path to dataset with ref poses")
     arg_parser.add_argument("--experiment", help="a short string to describe the experiment/commit used")
@@ -94,9 +95,11 @@ if __name__ == "__main__":
     # Instantiate and load pretrained NERF models
     nerfmm = {}
     nerf_args = get_nerf_args()
+    config_scenes = config.get("scenes")
 
-    h = nerf_args.h
-    w = nerf_args.w
+    s = config.get("s")
+    h = config.get("h")//s
+    w = config.get("w")//s
 
     scene_nerfs = [dir for dir in os.listdir(args.nerf_model_dir)]
     for scene in scene_nerfs:
@@ -114,10 +117,26 @@ if __name__ == "__main__":
         focal_net = LearnFocal(h, w, nerf_args.learn_focal, nerf_args.fx_only, order=nerf_args.focal_order)
         focal_net = focal_net.to(device=device)
         focal_net = load_ckpt_to_net(join(ckpt_dir, 'latest_focal.pth'), focal_net, map_location=device)
-        nerfmm[scene] = [model, focal_net]
 
-    # Instatiate the RPR (CONV2D + RPR)
-    rpr = RelativePoseRegressor(config).to(device)
+        n_imgs = config_scenes.get(scene)
+        pose_param_net = LearnPose(n_imgs, False, False, None)
+        pose_param_net = pose_param_net.to(device=device)
+        pose_param_net = load_ckpt_to_net(os.path.join(args.ckpt_dir, 'latest_pose.pth'), pose_param_net,
+                                          map_location=device)
+        pose_param_net.eval()
+        learned_poses = torch.stack([pose_param_net(i) for i in range(n_imgs)])
+        nerfmm[scene] = [model, focal_net, learned_poses]
+
+    # Instatiate the RPR
+    use_apr_for_pose_guess_only = config.get("apr_for_pose_guess")
+    normalize = Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
+    if use_apr_for_pose_guess_only:
+        # We do not use the latent from the APR but train an RPR directly from images
+        assert args.rpr_backbone_path is not None
+        rpr = RelativePoseRegressor(config, args.rpr_backbone_path).to(device)
+    else:
+        rpr = RelativePoseRegressorLatent(config).to(device)
     if args.rpr_checkpoint_path:
         rpr.load_state_dict(torch.load(args.rpr_checkpoint_path, map_location=device_id))
         logging.info("Initializing encoder from checkpoint: {}".format(args.rpr_checkpoint_path))
@@ -181,33 +200,42 @@ if __name__ == "__main__":
                 # Get latents and initial pose from APR
                 with torch.no_grad():
                     res = apr(minibatch)
-                latent_x_init = res.get("latent_x")
-                latent_q_init = res.get("latent_q")
                 p_init = res.get('pose')
-                latent_p_init = torch.cat((latent_x_init, latent_q_init), dim=1)
 
-                # Sample a pose in near radius
-                ref_p = get_closest_pose(p_init, dataset.poses, sample_radius=sample_radius)
-
-                # Pass pose to NERF
+                # Find closest pose within a radius and use NERF to reconstruct image
                 ref_rgb = []
                 ref_depth = []
 
+                ref_p = np.zeros((p_init.shape[0], 7))
                 with torch.no_grad():
                     for j in range(ref_p.shape[0]):
                         nerf_model = nerfmm[gt_scene_str[j]][0].eval().to(device)
                         focal_net = nerfmm[gt_scene_str[j]][1].eval().to(device)
-                        rgb, depth = run_nerf(nerf_model, focal_net, ref_p[j], h, w, device, nerf_args, near=0.0, far=1.0)
+                        learned_poses = nerfmm[gt_scene_str[j]][2]
+                        # Sample a pose in near radius
+                        closest_pose_index = get_closest_pose_index(p_init[j], dataloader.dataset.poses, sample_radius=sample_radius)
+                        ref_p[j, :] = dataloader.dataset.poses[closest_pose_index]
+                        ref_p_nerf = learned_poses[closest_pose_index]
+                        rgb, depth = run_nerf(nerf_model, focal_net, ref_p_nerf, h, w, device, nerf_args, near=0.0, far=1.0)
                         ref_rgb.append(rgb)
                         ref_depth.append(depth)
+
 
                 #Convert to Tensor
                 ref_rgb = torch.stack(ref_rgb, dim=0).to(device).to(dtype=torch.float32).permute(0, 3, 1, 2)
                 ref_depth = torch.stack(ref_depth, dim=0).to(device).to(dtype=torch.float32).unsqueeze(1)
+                ref_p = torch.from_numpy(ref_p).to(device)
 
                 # Compute relative pose and absolute pose
-                ref_p = torch.Tensor(ref_p).to(device).to(dtype=latent_p_init.dtype)
-                est_p = rpr(ref_rgb, ref_depth, ref_p, latent_p_init)['pose']
+                ref_p = torch.Tensor(ref_p).to(device).to(dtype=p_init.dtype)
+                if use_apr_for_pose_guess_only:
+                    ref_rgb = normalize(ref_rgb)
+                    est_p = rpr(minibatch["img"], ref_rgb, ref_p)['pose']
+                else:
+                    latent_x_init = res.get("latent_x")
+                    latent_q_init = res.get("latent_q")
+                    latent_p_init = torch.cat((latent_x_init, latent_q_init), dim=1)
+                    est_p = rpr(ref_rgb, ref_depth, ref_p, latent_p_init)['pose']
 
                 # Compute loss
                 criterion = pose_loss(est_p, gt_pose)
@@ -269,21 +297,18 @@ if __name__ == "__main__":
                 tic = time.time()
                 # Get latents and initial pose from APR
                 res = apr(minibatch)
-                latent_x_init = res.get("latent_x")
-                latent_q_init = res.get("latent_q")
                 p_init = res.get('pose')
                 scene_str = dataloader.dataset.scene_unique_names[0] # single scene at a time
-
-                latent_p_init = torch.cat((latent_x_init, latent_q_init), dim=1)
-
-                # Get closest pose
-                ref_p = get_closest_pose(p_init, ref_poses, sample_radius=0)
 
                 # Pass pose to NERF
                 nerf_model = nerfmm[scene_str][0].eval().to(device)
                 focal_net = nerfmm[scene_str][1].eval().to(device)
+                closest_pose_index = get_closest_pose_index(latent_p_init, ref_poses,
+                                                            sample_radius=0)
+                ref_p = ref_poses[closest_pose_index]
+                ref_p_nerf = learned_poses[closest_pose_index]
 
-                ref_rgb, ref_depth = run_nerf(nerf_model, focal_net, ref_p[0], h, w, device, nerf_args, near=0.0,
+                ref_rgb, ref_depth = run_nerf(nerf_model, focal_net, ref_p_nerf, h, w, device, nerf_args, near=0.0,
                                       far=1.0)
 
                 # Convert to Tensor
@@ -291,8 +316,17 @@ if __name__ == "__main__":
                 ref_depth = ref_depth.to(device).to(dtype=torch.float32).unsqueeze(0).unsqueeze(1)
 
                 # Compute relative pose and absolute pose
-                ref_p = torch.Tensor(ref_p).to(device).to(dtype=latent_p_init.dtype)
-                est_p = rpr(ref_rgb, ref_depth, ref_p, latent_p_init)['pose']
+                ref_p = torch.Tensor(ref_p).to(device).to(dtype=p_init.dtype)
+
+                if use_apr_for_pose_guess_only:
+                    ref_rgb = normalize(ref_rgb)
+                    est_p = rpr(minibatch["img"], ref_rgb, ref_p)['pose']
+                else:
+                    latent_x_init = res.get("latent_x")
+                    latent_q_init = res.get("latent_q")
+                    latent_p_init = torch.cat((latent_x_init, latent_q_init), dim=1)
+                    est_p = rpr(ref_rgb, ref_depth, ref_p, latent_p_init)['pose']
+
 
                 toc = time.time()
 
