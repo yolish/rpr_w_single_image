@@ -1,6 +1,8 @@
 import torch
 from models.nerfmm.utils.comp_ray_dir import comp_ray_dir_cam_fxfy
 from models.nerfmm.train_nerf import model_render_image
+import numpy as np
+import imageio
 
 class NerfArgs():
     def __init__(self):
@@ -21,7 +23,7 @@ def get_nerf_args():
     return NerfArgs()
 
 
-def run_nerf(nerf_model, focal_net, c2w, h, w, device, args, near=0.0, far=1.0):
+def run_nerf(nerf_model, focal_net, c2w, h, w, device, args, near=0.0, far=1.0, plot_temp_img=True):
     nerf_model.eval()
     focal_net.eval()
 
@@ -35,10 +37,9 @@ def run_nerf(nerf_model, focal_net, c2w, h, w, device, args, near=0.0, far=1.0):
     rgb = render_result['rgb'] # (h, w, 3)
     depth = render_result['depth_map'] # (h, W)
 
-    '''
-    img = (rgb.cpu().numpy() * 255).astype(np.uint8)
-    import imageio
-    imageio.imwrite('tmp.png', img)
-    '''
+    if plot_temp_img:
+        img = (rgb.cpu().numpy() * 255).astype(np.uint8)
+        imageio.imwrite('tmp.png', img)
+
     return rgb, depth
 
