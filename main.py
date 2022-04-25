@@ -121,7 +121,7 @@ if __name__ == "__main__":
         n_imgs = config_scenes.get(scene)
         pose_param_net = LearnPose(n_imgs, False, False, None)
         pose_param_net = pose_param_net.to(device=device)
-        pose_param_net = load_ckpt_to_net(os.path.join(args.ckpt_dir, 'latest_pose.pth'), pose_param_net,
+        pose_param_net = load_ckpt_to_net(os.path.join(ckpt_dir, 'latest_pose.pth'), pose_param_net,
                                           map_location=device)
         pose_param_net.eval()
         learned_poses = torch.stack([pose_param_net(i) for i in range(n_imgs)])
@@ -217,19 +217,18 @@ if __name__ == "__main__":
                         ref_p[j, :] = dataloader.dataset.poses[closest_pose_index]
                         ref_p_nerf = learned_poses[closest_pose_index]
                         rgb, depth = run_nerf(nerf_model, focal_net, ref_p_nerf, h, w, device, nerf_args, near=0.0, far=1.0)
-                        ref_rgb.append(rgb)
+                        if use_apr_for_pose_guess_only:
+                            ref_rgb.append(normalize(rgb.permute(2,0,1)))
+                        else:
+                            ref_rgb.append(rgb.permute(2,0,1))
                         ref_depth.append(depth)
 
-
                 #Convert to Tensor
-                ref_rgb = torch.stack(ref_rgb, dim=0).to(device).to(dtype=torch.float32).permute(0, 3, 1, 2)
+                ref_rgb = torch.stack(ref_rgb, dim=0).to(device).to(dtype=torch.float32)
                 ref_depth = torch.stack(ref_depth, dim=0).to(device).to(dtype=torch.float32).unsqueeze(1)
-                ref_p = torch.from_numpy(ref_p).to(device)
+                ref_p = torch.from_numpy(ref_p).to(device).to(p_init.dtype)
 
-                # Compute relative pose and absolute pose
-                ref_p = torch.Tensor(ref_p).to(device).to(dtype=p_init.dtype)
                 if use_apr_for_pose_guess_only:
-                    ref_rgb = normalize(ref_rgb)
                     est_p = rpr(minibatch["img"], ref_rgb, ref_p)['pose']
                 else:
                     latent_x_init = res.get("latent_x")
@@ -316,10 +315,10 @@ if __name__ == "__main__":
                 ref_depth = ref_depth.to(device).to(dtype=torch.float32).unsqueeze(0).unsqueeze(1)
 
                 # Compute relative pose and absolute pose
-                ref_p = torch.Tensor(ref_p).to(device).to(dtype=p_init.dtype)
+                ref_p = torch.from_numpy(ref_p).to(device).to(p_init.dtype)
 
                 if use_apr_for_pose_guess_only:
-                    ref_rgb = normalize(ref_rgb)
+                    ref_rgb = normalize(ref_rgb[0]).unsqueeze(0)
                     est_p = rpr(minibatch["img"], ref_rgb, ref_p)['pose']
                 else:
                     latent_x_init = res.get("latent_x")

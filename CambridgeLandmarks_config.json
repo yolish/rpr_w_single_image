@@ -36,15 +36,18 @@
 			"regressor_head_t",
 			"transformer_t"
 		],
-		"no_augment": true,
+		"no_augment": false,
 		"pose_sample_radius": 5,
-		"h": 1920,
-		"w": 1080,
+		"w": 1920,
+		"h": 1080,
 		"s": 30,
 		"scenes":
 		{
 			"ShopFacade": 231
-		}
+		},
+		"apr_for_pose_guess": true,
+		"rpr_backbone_type": "resnet50"
+
 	}
 
 }
