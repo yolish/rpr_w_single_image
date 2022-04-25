@@ -264,7 +264,7 @@ if __name__ == "__main__":
             scheduler.step()
 
         logging.info('Training completed')
-        torch.save(rpr.state_dict(), checkpoint_prefix + '_pose_encoder_final.pth'.format(epoch))
+        torch.save(rpr.state_dict(), checkpoint_prefix + '_rpr_final.pth'.format(epoch))
 
     else: # Test
 
@@ -302,7 +302,7 @@ if __name__ == "__main__":
                 # Pass pose to NERF
                 nerf_model = nerfmm[scene_str][0].eval().to(device)
                 focal_net = nerfmm[scene_str][1].eval().to(device)
-                closest_pose_index = get_closest_pose_index(latent_p_init, ref_poses,
+                closest_pose_index = get_closest_pose_index(p_init[0], ref_poses,
                                                             sample_radius=0)
                 ref_p = ref_poses[closest_pose_index]
                 ref_p_nerf = learned_poses[closest_pose_index]
@@ -315,7 +315,7 @@ if __name__ == "__main__":
                 ref_depth = ref_depth.to(device).to(dtype=torch.float32).unsqueeze(0).unsqueeze(1)
 
                 # Compute relative pose and absolute pose
-                ref_p = torch.from_numpy(ref_p).to(device).to(p_init.dtype)
+                ref_p = torch.from_numpy(ref_p).to(device).to(p_init.dtype).unsqueeze(0)
 
                 if use_apr_for_pose_guess_only:
                     ref_rgb = normalize(ref_rgb[0]).unsqueeze(0)
@@ -325,7 +325,6 @@ if __name__ == "__main__":
                     latent_q_init = res.get("latent_q")
                     latent_p_init = torch.cat((latent_x_init, latent_q_init), dim=1)
                     est_p = rpr(ref_rgb, ref_depth, ref_p, latent_p_init)['pose']
-
 
                 toc = time.time()
 

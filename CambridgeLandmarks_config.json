@@ -45,7 +45,7 @@
 		{
 			"ShopFacade": 231
 		},
-		"apr_for_pose_guess": true,
+		"apr_for_pose_guess": false,
 		"rpr_backbone_type": "resnet50"
 
 	}
