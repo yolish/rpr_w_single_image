@@ -108,6 +108,7 @@ class RelativePoseRegressor(PoseNet):
         Constructor
         :param backbone_path: backbone path to a resnet backbone
         """
+        config["backbone_type"] = config["rpr_backbone_type"]
         super(RelativePoseRegressor, self).__init__(config, backbone_path)
 
         # Regressor layers
